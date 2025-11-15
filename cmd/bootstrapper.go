@@ -11,13 +11,38 @@ import (
 // bootstrapperCmd represents the bootstrapper command
 var bootstrapperCmd = &cobra.Command{
 	Use:   "bootstrapper",
-	Short: "A brief description of your command",
-	Long: `A longer description that spans multiple lines and likely contains examples
-and usage of using your command. For example:
+	Short: "TCP overlay node for network control", //does this make sense
+	Long: `The bootstrapper listens on a TCP port and on connection attempts
+uses the configuration file to look for neighbors of the client and return
+those neighbors.
 
-Cobra is a CLI library for Go that empowers applications.
-This application is a tool to generate the needed files
-to quickly create a Cobra application.`,
+                                       
+              High-Level Bootstrapper Flow         
+                                                   
+     ,------------.                        ,------.
+     |Bootstrapper|                        |Client|
+     '------+-----'                        '---+--'
+            |----.                             |   
+            |    | Start listening on TCP port |   
+            |<---'                             |   
+            |                                  |   
+            |             Connect              |   
+            |<---------------------------------|   
+            |                                  |   
+            |        Accept connection         |   
+            |--------------------------------->|   
+            |                                  |   
+            |        Request neighbors         |   
+            |<---------------------------------|   
+            |                                  |   
+            |    Return neighbors (if any)     |   
+            |--------------------------------->|   
+            |                                  |   
+            |        Close connection          |   
+            |--------------------------------->|   
+     ,------+-----.                        ,---+--.
+     |Bootstrapper|                        |Client|
+     '------------'                        '------'`,
 	Run: func(cmd *cobra.Command, args []string) {
 		bootstrapper.Bootstrapper()
 	},
