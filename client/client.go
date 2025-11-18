@@ -13,7 +13,7 @@ import (
 // neighbors string doesnt inlcude the port, probably should standardize that in a config file
 func pingNeighborsUDP(neighbors []string) {
 	for _, neighbor := range neighbors {
-		conn, err := net.Dial("udp", neighbor)
+		conn, err := net.Dial("udp4", neighbor)
 		if err != nil {
 			color.Red("Failed to connect to: %v", conn.RemoteAddr())
 		}
@@ -67,19 +67,25 @@ func getNeighbors() (neighbors []string) {
 	}
 }
 
-func readStream(conn net.PacketConn) {
+func readStream() {
+	conn, err := net.DialTimeout("udp4", ":8080", time.Second*10)
+	buff := make([]byte, 2048)
+	if err != nil {
+		color.New(color.FgRed).Println(err)
+	}
 	fmt.Println(conn.LocalAddr().String())
+	for {
+		n, err := bufio.NewReader(conn).Read(buff)
+		if err != nil {
+			color.Red("Error reading udp stream: %v", err)
+		}
+		color.HiBlack(string(buff[:n]))
+	}
 }
 
 func Client() {
 	// neighbors := getNeighbors()
 	// fmt.Println(neighbors)
 
-	// "reserve" the port
-	conn, err := net.ListenPacket("udp4", ":0")
-	if err != nil {
-		color.New(color.FgRed).Println(err)
-	}
-
-	readStream(conn)
+	readStream()
 }
