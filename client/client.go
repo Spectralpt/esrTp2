@@ -4,63 +4,88 @@ import (
 	"bufio"
 	"fmt"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/fatih/color"
 )
 
-func Client() {
-	ConnTimmout := time.Second * 10
+// neighbors string doesnt inlcude the port, probably should standardize that in a config file
+func pingNeighborsUDP(neighbors []string) {
+	for _, neighbor := range neighbors {
+		conn, err := net.Dial("udp4", neighbor)
+		if err != nil {
+			color.Red("Failed to connect to: %v", conn.RemoteAddr())
+		}
+	}
+}
+
+func getNeighbors(bootstrapperIp []net.IP) (neighbors []string) {
+	ConnTimeout := time.Second * 10
 	buff := make([]byte, 2048)
 
-	//as far as i can tell this is more of sanity check cause at least in this case
-	// youd need to be pretty stupid for this not to resolve
-	serverAddrStr := "127.0.0.1:8080"
-	serverAddr, err := net.ResolveUDPAddr("udp", serverAddrStr)
-	if err != nil {
-		color.Red("resolve error: %v", err)
-		return
-	}
+	serverAddrStr := "10.0.3.10:8080"
 
 	color.Green("Client started")
-	fmt.Println("serveraddr:", serverAddr)
-	/*
-		if err == nil {
-			fmt.Println(err)
-		}
-	*/
 
-	//try to establish connection for  10 seconds one attempt each second
+	// Try to establish connection for 10 seconds
 	var conn net.Conn
 	start := time.Now()
-	for time.Since(start) < ConnTimmout {
+	for time.Since(start) < ConnTimeout {
+		gray := color.New(color.FgHiBlack)
+		gray.Println("Attemping to connect to:", serverAddrStr)
 		var err error
-		conn, err = net.Dial("udp", serverAddrStr)
+		conn, err = net.Dial("tcp", serverAddrStr) // Changed from "udp" to "tcp"
 		if err == nil {
 			break
 		}
-
 		time.Sleep(time.Second)
 	}
-	/*
-		fmt.Fprintf(conn, "GET / HTTP/1.0\r\n\r\n")
-		status, err := bufio.NewReader(conn).ReadString('\n')
-		fmt.Println(status)
-	*/
+
 	if conn == nil {
-		color.Red("Could not establish connection to server within %v", ConnTimmout)
+		red := color.New(color.FgRed)
+		gray := color.New(color.FgHiBlack)
+
+		red.Print("Connection timed out: ")
+		gray.Println("(10 seconds)")
+
 		return
 	}
 
-	fmt.Fprintf(conn, "ping")
-
+	defer conn.Close()
 	for {
 		n, err := bufio.NewReader(conn).Read(buff)
-
 		if err != nil {
 			color.Red("Read error: %v", err)
 			return
 		}
-		color.Green(string(buff[:n]))
+		neighbors := string(buff[:n])
+		color.Green(neighbors)
+		if len(neighbors) > 0 {
+			return strings.Split(neighbors, ",")
+		}
 	}
+}
+
+func readStream() {
+	conn, err := net.DialTimeout("udp4", ":8080", time.Second*10)
+	buff := make([]byte, 2048)
+	if err != nil {
+		color.New(color.FgRed).Println(err)
+	}
+	fmt.Println(conn.LocalAddr().String())
+	for {
+		n, err := bufio.NewReader(conn).Read(buff)
+		if err != nil {
+			color.Red("Error reading udp stream: %v", err)
+		}
+		color.HiBlack(string(buff[:n]))
+	}
+}
+
+func Client() {
+	// neighbors := getNeighbors()
+	// fmt.Println(neighbors)
+
+	readStream()
 }
