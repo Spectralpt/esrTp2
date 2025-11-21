@@ -20,11 +20,11 @@ func pingNeighborsUDP(neighbors []string) {
 	}
 }
 
-func getNeighbors() (neighbors []string) {
+func getNeighbors(bootstrapperIp []net.IP) (neighbors []string) {
 	ConnTimeout := time.Second * 10
 	buff := make([]byte, 2048)
 
-	serverAddrStr := "127.0.0.1:8080"
+	serverAddrStr := "10.0.3.10:8080"
 
 	color.Green("Client started")
 
