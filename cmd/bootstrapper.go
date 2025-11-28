@@ -5,7 +5,7 @@ package cmd
 
 import (
 	"github.com/spf13/cobra"
-	"streaming/bootstrapper"
+	"ott/bootstrapper"
 )
 
 // bootstrapperCmd represents the bootstrapper command

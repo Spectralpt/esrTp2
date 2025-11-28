@@ -5,7 +5,7 @@ package cmd
 
 import (
 	"github.com/spf13/cobra"
-	"streaming/oNode"
+	"ott/oNode"
 )
 
 // oNodeCmd represents the oNode command

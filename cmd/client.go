@@ -5,7 +5,7 @@ package cmd
 
 import (
 	"github.com/spf13/cobra"
-	"streaming/client"
+	"ott/client"
 )
 
 // clientCmd represents the client command

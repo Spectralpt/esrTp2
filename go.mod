@@ -1,4 +1,4 @@
-module streaming
+module ott
 
 go 1.25
 

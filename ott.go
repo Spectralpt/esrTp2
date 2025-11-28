@@ -1,10 +1,9 @@
 /*
 Copyright © 2025 NAME HERE <EMAIL ADDRESS>
-
 */
 package main
 
-import "streaming/cmd"
+import "ott/cmd"
 
 func main() {
 	cmd.Execute()

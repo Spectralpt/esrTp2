@@ -5,7 +5,7 @@ package cmd
 
 import (
 	"github.com/spf13/cobra"
-	"streaming/server"
+	"ott/server"
 )
 
 // serverCmd represents the server command
