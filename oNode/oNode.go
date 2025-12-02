@@ -6,29 +6,28 @@ import (
 	"fmt"
 	"log"
 	"net"
-
-	"github.com/fatih/color"
+	"time"
 )
 
 type TCPMessageType uint8
 
 const (
-	MsgBootstrapRequest TCPMessageType = iota //request neighbor list
-	MsgBootstrapReply                         //send neightbor list
-	MsgNeighborsHello                         //greet all neighbors
-	MsgNeighborsReply                         //reply to greet
-	MsgDVUpdate                               //update routing using distance vector
-	MsgHeartbeat                              //signal neighbors you're still alive
-	MsgStreamJoin                             //signal neighbors you want a particular stream
-	MsgStreamJoinAck                          //confirm join request
-	MsgStreamLeave                            //signal neighbors you no longer want a particular stream
-	MsgStreamLeaveAck                         //confirm leave request
+	MsgBootstrapRequest TCPMessageType = iota
+	MsgBootstrapReply
+	MsgNeighborsHello
+	MsgNeighborsReply
+	MsgDVUpdate
+	MsgHeartbeat
+	MsgStreamJoin
+	MsgStreamJoinAck
+	MsgStreamLeave
+	MsgStreamLeaveAck
 )
 
 type UDPMessageType uint8
 
 const (
-	MsgStreamPacket UDPMessageType = iota //contains video data
+	MsgStreamPacket UDPMessageType = iota
 	MsgLatencyProbe
 	MsgLatencyProbeReply
 )
@@ -50,6 +49,12 @@ type DVEntry struct {
 	Destination string `json:"destination"`
 	NextHop     string `json:"next_hop"`
 	Cost        int    `json:"cost"`
+}
+
+type Node struct {
+	Address      []string
+	Neighbors    []string
+	RoutingTable map[string]DVEntry
 }
 
 type StreamJoinBody struct {
@@ -77,7 +82,7 @@ func sendTCPMessage(conn net.Conn, msg TCPMessage) error {
 }
 
 func getNeighbors() ([]string, error) {
-	conn, err := net.Dial("tcp4", "127.0.0.1:8000")
+	conn, err := net.Dial("tcp4", "10.0.0.10:8000")
 	if err != nil {
 		return nil, err
 	}
@@ -92,7 +97,6 @@ func getNeighbors() ([]string, error) {
 		return nil, err
 	}
 
-	// Read one newline-delimited message
 	reader := bufio.NewReader(conn)
 	line, err := reader.ReadBytes('\n')
 	if err != nil {
@@ -116,8 +120,243 @@ func getNeighbors() ([]string, error) {
 	return reply.Neighbors, nil
 }
 
+func tcpPing(addr string) bool {
+	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
+}
+
+func liveNeighbors(neighbors []string) []string {
+	var live []string
+	for _, ip := range neighbors {
+		if tcpPing(ip) {
+			live = append(live, ip)
+		}
+	}
+	return live
+}
+
+func getLocalIPs() ([]string, error) {
+	localIPs := make(map[string]bool)
+
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil, err
+	}
+
+	for _, i := range ifaces {
+		addrs, err := i.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			var ip net.IP
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+			localIPs[ip.String()] = true
+		}
+	}
+
+	keys := make([]string, 0, len(localIPs))
+	for k := range localIPs {
+		keys = append(keys, k)
+	}
+
+	return keys, nil
+}
+
+func initiateTable(live []string) Node {
+	myIps, _ := getLocalIPs()
+	node := Node{
+		Address:      myIps,
+		Neighbors:    live,
+		RoutingTable: make(map[string]DVEntry),
+	}
+
+	for _, neighbor := range node.Neighbors {
+		node.RoutingTable[neighbor] = DVEntry{
+			Destination: neighbor,
+			NextHop:     neighbor,
+			Cost:        1,
+		}
+	}
+
+	return node
+}
+
+func prepareDVUpdate(routingTable map[string]DVEntry) DVUpdateBody {
+	update := DVUpdateBody{
+		Entries: make([]DVEntry, 0, len(routingTable)),
+	}
+
+	for _, entry := range routingTable {
+		update.Entries = append(update.Entries, entry)
+	}
+
+	return update
+}
+
+func sendTableToNeighbors(node Node) {
+	update := prepareDVUpdate(node.RoutingTable)
+	body, _ := json.Marshal(update)
+
+	msg := TCPMessage{
+		MsgType: MsgDVUpdate,
+		Body:    body,
+	}
+
+	for _, neighbor := range node.Neighbors {
+		conn, err := net.Dial("tcp", neighbor+":9000")
+		if err != nil {
+			continue
+		}
+		sendTCPMessage(conn, msg)
+		conn.Close()
+	}
+}
+
+func receiveTable(node *Node) {
+	localAddr, err := net.ResolveTCPAddr("tcp", ":9000")
+	if err != nil {
+		return
+	}
+
+	listener, err := net.ListenTCP("tcp", localAddr)
+	if err != nil {
+		return
+	}
+	defer listener.Close()
+
+	for {
+		conn, err := listener.AcceptTCP()
+		if err != nil {
+			continue
+		}
+
+		sender := conn.RemoteAddr().String()
+
+		go func(c *net.TCPConn) {
+			defer c.Close()
+
+			reader := bufio.NewReader(c)
+			line, err := reader.ReadBytes('\n')
+			if err != nil {
+				return
+			}
+
+			var tcpMsg TCPMessage
+			if err := json.Unmarshal(line, &tcpMsg); err != nil {
+				return
+			}
+
+			switch tcpMsg.MsgType {
+			case MsgDVUpdate:
+				var update DVUpdateBody
+				if err := json.Unmarshal(tcpMsg.Body, &update); err != nil {
+					return
+				}
+
+				updateTable(node, tcpMsg.Body)
+
+				senderIP, _, err := net.SplitHostPort(sender)
+				if err != nil {
+					return
+				}
+				broadcastDVUpdate(node, senderIP)
+
+			case MsgHeartbeat:
+				var heartbeat HeartbeatBody
+				if err := json.Unmarshal(tcpMsg.Body, &heartbeat); err != nil {
+					return
+				}
+
+			case MsgNeighborsHello:
+			default:
+			}
+		}(conn)
+
+		// debug
+		fmt.Println("Routing table for node:", node.Address)
+		fmt.Println("Destination\tNextHop\tCost")
+		for dest, entry := range node.RoutingTable {
+			fmt.Printf("%s\t%s\t%d\n", dest, entry.NextHop, entry.Cost)
+		}
+	}
+}
+
+func updateTable(node *Node, bodyData []byte) {
+	var update DVUpdateBody
+	if err := json.Unmarshal(bodyData, &update); err != nil {
+		return
+	}
+
+	for _, entry := range update.Entries {
+		isSelf := false
+		for _, local := range node.Address {
+			if entry.Destination == local {
+				isSelf = true
+				break
+			}
+		}
+		if isSelf {
+			continue
+		}
+
+		if existing, exists := node.RoutingTable[entry.Destination]; !exists {
+			node.RoutingTable[entry.Destination] = DVEntry{
+				Destination: entry.Destination,
+				NextHop:     entry.NextHop,
+				Cost:        entry.Cost + 1,
+			}
+		} else {
+			newCost := entry.Cost + 1
+			if newCost < existing.Cost {
+				existing.Cost = newCost
+				existing.NextHop = entry.NextHop
+				node.RoutingTable[entry.Destination] = existing
+			}
+		}
+	}
+}
+
+func broadcastDVUpdate(node *Node, except string) {
+	update := prepareDVUpdate(node.RoutingTable)
+
+	body, err := json.Marshal(update)
+	if err != nil {
+		return
+	}
+
+	msg := TCPMessage{
+		MsgType: MsgDVUpdate,
+		Body:    body,
+	}
+
+	for _, nbr := range node.Neighbors {
+		if nbr == except {
+			continue
+		}
+
+		addr := nbr + ":9000"
+		conn, err := net.Dial("tcp", addr)
+		if err != nil {
+			continue
+		}
+
+		sendTCPMessage(conn, msg)
+		conn.Close()
+	}
+}
+
 func listen(nextNode *string) {
-	localAddr, err := net.ResolveUDPAddr("udp", ":2000")
+	localAddr, err := net.ResolveUDPAddr("udp", ":9000")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -128,14 +367,11 @@ func listen(nextNode *string) {
 	}
 	defer conn.Close()
 
-	color.Green("Listening on UDP :2000")
-
 	buf := make([]byte, 2048)
 
 	for {
 		n, srcAddr, err := conn.ReadFromUDP(buf)
 		if err != nil {
-			color.Red("Error reading packet: %v", err)
 			continue
 		}
 
@@ -149,13 +385,11 @@ func listen(nextNode *string) {
 func forwardPacket(packet []byte, srcAddr *net.UDPAddr, nextNode string, localConn *net.UDPConn) {
 	nextAddr, err := net.ResolveUDPAddr("udp", nextNode)
 	if err != nil {
-		color.Red("Failed to resolve next node: %v", err)
 		return
 	}
 
 	_, err = localConn.WriteToUDP(packet, nextAddr)
 	if err != nil {
-		color.Red("Failed to send packet to next node: %v", err)
 		return
 	}
 }
@@ -163,10 +397,25 @@ func forwardPacket(packet []byte, srcAddr *net.UDPAddr, nextNode string, localCo
 func ONode() {
 	neighbors, err := getNeighbors()
 	if err != nil {
-		fmt.Println("getNeighbors error:", err)
 		return
 	}
-	fmt.Println(neighbors)
-	//nextNodeAddrStr := "10.0.0.20:2000"
-	//listen(&nextNodeAddrStr)
+
+	node := initiateTable(neighbors)
+	nodePtr := &node
+
+	go receiveTable(nodePtr)
+
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		sendTableToNeighbors(node)
+	}
 }
+
+// debug
+//fmt.Println("Routing table for node:", node.Address)
+//fmt.Println("Destination\tNextHop\tCost")
+//for dest, entry := range node.RoutingTable {
+//	fmt.Printf("%s\t%s\t%d\n", dest, entry.NextHop, entry.Cost)
+//}

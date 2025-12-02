@@ -111,7 +111,7 @@ func handleNode(conn net.Conn, graph map[string][]string) {
 }
 
 func serveNeighbors(graph map[string][]string) {
-	ln, err := net.Listen("tcp4", "127.0.0.1:8000")
+	ln, err := net.Listen("tcp4", "10.0.0.10:8000")
 	if err != nil {
 		color.Red("Error starting bootstrapper: %v", err)
 		return
