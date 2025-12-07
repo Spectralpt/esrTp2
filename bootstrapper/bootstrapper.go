@@ -22,6 +22,10 @@ type TCPMessage struct {
 	Body    json.RawMessage `json:"body"`
 }
 
+type BootstrapRequestBody struct {
+	SenderIps []string `json:"senderIps"`
+}
+
 var wg sync.WaitGroup
 
 func readJSONFile(filePath string) (map[string][]string, error) {
@@ -81,11 +85,33 @@ func handleNode(conn net.Conn, graph map[string][]string) {
 		return
 	}
 
-	// Lookup neighbors
-	neighbors, ok := graph[nodeIP]
-	if !ok {
-		neighbors = []string{} // unknown node gets empty list
+	var bootstrapRequest BootstrapRequestBody
+	err = json.Unmarshal(req.Body, &bootstrapRequest)
+	if err != nil {
+		color.Red("Failed to parse bootstrap request: %v", err)
 	}
+
+	// --- CRITICAL FIX: Find the first matching neighbor list ---
+	var neighbors []string
+	found := false
+
+	// Iterate through ALL IPs the connecting node advertises (SenderIps)
+	for _, senderIP := range bootstrapRequest.SenderIps {
+		if list, ok := graph[senderIP]; ok {
+			// Found a match! This is the correct neighbor list for the node.
+			neighbors = list
+			found = true
+			color.Yellow("Matched node identity to configured IP: %s", senderIP)
+			break // Exit loop immediately after finding the correct list
+		}
+	}
+
+	if !found {
+		// If no match was found for any of the sender's IPs, the list remains empty.
+		neighbors = []string{}
+		color.Red("Node failed to match any configured IP in graph. Sender IPs: %v", bootstrapRequest.SenderIps)
+	}
+	// --- END CRITICAL FIX ---
 
 	// Encode JSON for reply body
 	body, err := json.Marshal(struct {
@@ -111,7 +137,7 @@ func handleNode(conn net.Conn, graph map[string][]string) {
 }
 
 func serveNeighbors(graph map[string][]string) {
-	ln, err := net.Listen("tcp4", "10.0.0.10:8000")
+	ln, err := net.Listen("tcp4", ":8000")
 	if err != nil {
 		color.Red("Error starting bootstrapper: %v", err)
 		return

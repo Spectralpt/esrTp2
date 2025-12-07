@@ -4,8 +4,9 @@ Copyright © 2025 NAME HERE <EMAIL ADDRESS>
 package cmd
 
 import (
-	"github.com/spf13/cobra"
 	"ott/oNode"
+
+	"github.com/spf13/cobra"
 )
 
 // oNodeCmd represents the oNode command
@@ -19,7 +20,7 @@ Cobra is a CLI library for Go that empowers applications.
 This application is a tool to generate the needed files
 to quickly create a Cobra application.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		oNode.ONode()
+		oNode.RunOverlayNode()
 	},
 }
 
