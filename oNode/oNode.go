@@ -35,6 +35,15 @@ const (
 	MsgLatencyProbeReply
 )
 
+type UDPMessage struct {
+	MsgType UDPMessageType  `json:"msg_type"`
+	Body    json.RawMessage `json:"body"`
+}
+
+type LatencyProbeBody struct {
+	TimeStamp time.Time `json:"time_stamp"`
+}
+
 type TCPMessage struct {
 	MsgType TCPMessageType  `json:"type"`
 	Body    json.RawMessage `json:"body"`
@@ -387,16 +396,6 @@ func controlMessageListener(node *Node) {
 					}
 				}
 
-			//case MsgNeighborsHello:
-			//	var neighborsHello NeighborsHelloBody
-			//	if err := json.Unmarshal(tcpMsg.Body, &neighborsHello); err != nil {
-			//		return
-			//	}
-			//	if neighbor, sender, matched := matchSenderToNeighbor(neighborsHello.SenderIps, node.Neighbors); matched {
-			//		fmt.Printf("Neighbors %s became alive")
-			//		node.LastHeartbeat[sender] = time.Now()
-			//
-			//	}
 			default:
 			}
 		}(conn)
@@ -414,32 +413,32 @@ func updateLiveNeighbors(node *Node) {
 	timeout := time.Second * 30
 	var newLive []string
 
-	fmt.Printf("[DEBUG] === Checking Live Neighbors ===\n")
-	fmt.Printf("[DEBUG] node.Neighbors: %v\n", node.Neighbors)
-	fmt.Printf("[DEBUG] node.LastHeartbeat keys: ")
+	//fmt.Printf("[DEBUG] === Checking Live Neighbors ===\n")
+	//fmt.Printf("[DEBUG] node.Neighbors: %v\n", node.Neighbors)
+	//fmt.Printf("[DEBUG] node.LastHeartbeat keys: ")
 	for k := range node.LastHeartbeat {
 		fmt.Printf("%q ", k)
 	}
 	fmt.Printf("\n")
 
 	for _, neighbor := range node.Neighbors {
-		fmt.Printf("[DEBUG] Checking neighbor: %q\n", neighbor)
+		//fmt.Printf("[DEBUG] Checking neighbor: %q\n", neighbor)
 		if lastSeen, exists := node.LastHeartbeat[neighbor]; exists {
 			age := time.Since(lastSeen)
 			if age <= timeout {
 				newLive = append(newLive, neighbor)
-				fmt.Printf("[DEBUG] %s is ALIVE (last seen %v ago)\n", neighbor, age)
+				//fmt.Printf("[DEBUG] %s is ALIVE (last seen %v ago)\n", neighbor, age)
 			} else {
-				fmt.Printf("[DEBUG] %s is DEAD (last seen %v ago)\n", neighbor, age)
+				//fmt.Printf("[DEBUG] %s is DEAD (last seen %v ago)\n", neighbor, age)
 				removeRoutesThrough(node, neighbor)
 			}
 		} else {
-			fmt.Printf("[DEBUG] %s has never been seen\n", neighbor)
+			//fmt.Printf("[DEBUG] %s has never been seen\n", neighbor)
 			removeRoutesThrough(node, neighbor)
 		}
 	}
 	node.LiveNeighbors = newLive
-	fmt.Printf("[DEBUG] Final LiveNeighbors: %v\n", newLive)
+	//fmt.Printf("[DEBUG] Final LiveNeighbors: %v\n", newLive)
 }
 
 func removeRoutesThrough(node *Node, deadNeighbor string) {
@@ -456,48 +455,6 @@ func removeRoutesThrough(node *Node, deadNeighbor string) {
 		propagateDV(node, "") // Notify all neighbors
 	}
 }
-
-//func updateTable(node *Node, update DVUpdateBody, nodeFacingIp string) bool {
-//	neighbor, matched := matchSenderToNeighbor(update.SenderIPs, node.Neighbors)
-//	currentEntry, neighborIsInRoutingTable := node.RoutingTable[neighbor]
-//
-//	changed := false
-//
-//	for _, updateEntry := range update.Entries {
-//		isSelf := false
-//		for _, local := range node.Address {
-//			if updateEntry.Destination == local {
-//				isSelf = true
-//				break
-//			}
-//		}
-//		if isSelf {
-//			continue
-//		}
-//
-//		if !matched {
-//			fmt.Printf("[WARN] Got DVUpdate from unknown node: %s\n", updateEntry.Destination)
-//		}
-//
-//		if matched && !neighborIsInRoutingTable {
-//			newEntry := DVEntry{
-//				Destination: updateEntry.Destination,
-//				NextHop:     nodeFacingIp,
-//				Cost:        1,
-//			}
-//			node.RoutingTable[neighbor] = newEntry
-//			changed = true
-//		} else {
-//			if updateEntry.Cost+1 < currentEntry.Cost {
-//				currentEntry.Destination = updateEntry.Destination
-//				currentEntry.NextHop = nodeFacingIp
-//				currentEntry.Cost = updateEntry.Cost + 1
-//				changed = true
-//			}
-//		}
-//	}
-//	return changed
-//}
 
 func updateTable(node *Node, update DVUpdateBody, nodeFacingIp string) bool {
 	// Check if the sender is a known neighbor (already filtered by matchSenderToNeighbor)
@@ -519,13 +476,13 @@ func updateTable(node *Node, update DVUpdateBody, nodeFacingIp string) bool {
 			}
 		}
 		if isSelf {
-			fmt.Println("[DEBUG-UPDATE] Destination is LOCAL ADDRESS. Skipping (Poison Reverse).")
+			//fmt.Println("[DEBUG-UPDATE] Destination is LOCAL ADDRESS. Skipping (Poison Reverse).")
 			continue
 		}
 
 		// Handle case where sender is unknown
 		if !matched {
-			fmt.Printf("[WARN] Got DVUpdate from UNKNOWN node: %s. Update skipped.\n", nodeFacingIp)
+			//fmt.Printf("[WARN] Got DVUpdate from UNKNOWN node: %s. Update skipped.\n", nodeFacingIp)
 			continue
 		}
 
@@ -535,8 +492,8 @@ func updateTable(node *Node, update DVUpdateBody, nodeFacingIp string) bool {
 
 		if !exists {
 			// Case A: New route discovered
-			fmt.Printf("[DEBUG-UPDATE] Route to %s DOES NOT EXIST. Adding new route via %s (Cost: %d).\n",
-				updateEntry.Destination, nodeFacingIp, newCost)
+			//fmt.Printf("[DEBUG-UPDATE] Route to %s DOES NOT EXIST. Adding new route via %s (Cost: %d).\n",
+			//	updateEntry.Destination, nodeFacingIp, newCost)
 
 			node.RoutingTable[updateEntry.Destination] = DVEntry{
 				Destination: updateEntry.Destination,
@@ -564,8 +521,8 @@ func updateTable(node *Node, update DVUpdateBody, nodeFacingIp string) bool {
 			} else if currentRoute.NextHop == neighbor && newCost > currentRoute.Cost {
 				// Case B.2: Path is longer, but we currently use this neighbor (Link Cost Change)
 				// This is required to detect when a link cost increases (or a route is poisoned)
-				fmt.Printf("[DEBUG-UPDATE] Current NextHop IS %s, and path cost INCREASED. Updating cost to %d.\n",
-					neighbor, newCost)
+				//fmt.Printf("[DEBUG-UPDATE] Current NextHop IS %s, and path cost INCREASED. Updating cost to %d.\n",
+				//	neighbor, newCost)
 
 				node.RoutingTable[updateEntry.Destination] = DVEntry{
 					Destination: updateEntry.Destination,
@@ -575,12 +532,12 @@ func updateTable(node *Node, update DVUpdateBody, nodeFacingIp string) bool {
 				changed = true
 			} else {
 				// Case B.3: Path is longer, and we use a different neighbor (Ignore)
-				fmt.Printf("[DEBUG-UPDATE] Path is LONGER or equal, and we use a different NextHop (%s). Ignoring update.\n",
-					currentRoute.NextHop)
+				//fmt.Printf("[DEBUG-UPDATE] Path is LONGER or equal, and we use a different NextHop (%s). Ignoring update.\n",
+				//	currentRoute.NextHop)
 			}
 		}
 	}
-	fmt.Printf("[DEBUG-UPDATE] Update finished. Table changed: %t\n\n", changed)
+	//fmt.Printf("[DEBUG-UPDATE] Update finished. Table changed: %t\n\n", changed)
 	return changed
 }
 
