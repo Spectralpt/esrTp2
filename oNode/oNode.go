@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strconv"
 	"time"
 )
 
 var BOOTSTRAPER_IP = "10.0.2.10:8000"
-var ONODE_UDP_PORT_STRING = ":9000"
+var ONODE_TCP_PORT_STRING = ":9000"
+var ONODE_UDP_PORT_STRING = ":9999"
 
 type TCPMessageType uint8
 
@@ -41,7 +43,8 @@ type UDPMessage struct {
 }
 
 type LatencyProbeBody struct {
-	TimeStamp time.Time `json:"time_stamp"`
+	TimeStamp int64    `json:"time_stamp"`
+	SenderIps []string `json:"sender_ips"`
 }
 
 type TCPMessage struct {
@@ -68,7 +71,7 @@ type DVUpdateBody struct {
 type DVEntry struct {
 	Destination string `json:"destination"`
 	NextHop     string `json:"next_hop"`
-	Cost        int    `json:"cost"`
+	Cost        int64  `json:"cost"`
 }
 
 type Node struct {
@@ -169,6 +172,32 @@ func sendTCPMessage(conn net.Conn, msg TCPMessage) error {
 	b = append(b, '\n')
 	_, err = conn.Write(b)
 	return err
+}
+
+func sendUDPMessage(local *net.UDPConn, remote *net.UDPAddr, msg UDPMessage) error {
+	b, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+	b = append(b, '\n')
+	_, err = local.WriteToUDP(b, remote)
+	return err
+}
+
+func sendLatencyProbe(node *Node, local *net.UDPConn) error {
+	for _, neighbor := range node.LiveNeighbors {
+		timestamp := time.Now().Unix()
+		body, _ := json.Marshal(LatencyProbeBody{TimeStamp: timestamp})
+		msg := UDPMessage{
+			MsgType: MsgLatencyProbe,
+			Body:    body,
+		}
+
+		neighborIP := net.ParseIP(neighbor)
+		port, _ := strconv.Atoi(ONODE_UDP_PORT_STRING)
+		sendUDPMessage(local, &net.UDPAddr{IP: neighborIP, Port: port}, msg)
+	}
+	return nil
 }
 
 func getNeighbors() ([]string, error) {
@@ -317,7 +346,7 @@ func periodicDVBroadcast(node *Node) {
 	}
 
 	for _, neighbor := range node.LiveNeighbors {
-		conn, err := net.Dial("tcp4", neighbor+ONODE_UDP_PORT_STRING)
+		conn, err := net.Dial("tcp4", neighbor+ONODE_TCP_PORT_STRING)
 		if err != nil {
 			continue
 		}
@@ -327,7 +356,7 @@ func periodicDVBroadcast(node *Node) {
 }
 
 func controlMessageListener(node *Node) {
-	localAddr, err := net.ResolveTCPAddr("tcp4", ONODE_UDP_PORT_STRING)
+	localAddr, err := net.ResolveTCPAddr("tcp4", ONODE_TCP_PORT_STRING)
 	if err != nil {
 		return
 	}
@@ -488,7 +517,8 @@ func updateTable(node *Node, update DVUpdateBody, nodeFacingIp string) bool {
 
 		// Look up the current route to the destination in *our* table
 		currentRoute, exists := node.RoutingTable[updateEntry.Destination]
-		newCost := updateEntry.Cost + 1 // Cost to destination through the neighbor
+		// WARN: this was changed to try and sum the latencies correct not tested yet
+		newCost := updateEntry.Cost + node.RoutingTable[neighbor].Cost // Cost to destination through the neighbor
 
 		if !exists {
 			// Case A: New route discovered
@@ -559,7 +589,7 @@ func propagateDV(node *Node, except string) {
 			continue
 		}
 
-		addr := nbr + ONODE_UDP_PORT_STRING
+		addr := nbr + ONODE_TCP_PORT_STRING
 		conn, err := net.Dial("tcp4", addr)
 		if err != nil {
 			continue
@@ -570,30 +600,55 @@ func propagateDV(node *Node, except string) {
 	}
 }
 
-func listen(nextNode *string) {
-	localAddr, err := net.ResolveUDPAddr("udp4", ONODE_UDP_PORT_STRING)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	conn, err := net.ListenUDP("udp4", localAddr)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer conn.Close()
-
-	buf := make([]byte, 2048)
+func uDPListener(node *Node, listener *net.UDPConn) {
+	//localAddr, err := net.ResolveUDPAddr("udp4", ONODE_UDP_PORT_STRING)
+	//if err != nil {
+	//	log.Fatal(err)
+	//}
+	//
+	//listener, err := net.ListenUDP("udp4", localAddr)
+	//if err != nil {
+	//	log.Fatal(err)
+	//}
+	defer listener.Close()
 
 	for {
-		n, srcAddr, err := conn.ReadFromUDP(buf)
+		buf := make([]byte, 2048)
+		n, sender, err := listener.ReadFromUDP(buf)
 		if err != nil {
 			continue
 		}
+		packet := buf[:n]
 
-		packet := make([]byte, n)
-		copy(packet, buf[:n])
+		go func(packet []byte, remote *net.UDPAddr, listener *net.UDPConn) {
+			message := UDPMessage{}
+			err = json.Unmarshal(packet, &message)
+			if err != nil {
+				return
+			}
+			switch message.MsgType {
+			case MsgLatencyProbe:
+				sendUDPMessage(listener, sender, message)
+			case MsgLatencyProbeReply:
+				var body LatencyProbeBody
+				err = json.Unmarshal(message.Body, &body)
+				if err != nil {
+					return
+				}
 
-		go forwardPacket(packet, srcAddr, *nextNode, conn)
+				rtt := time.Now().Unix() - body.TimeStamp
+				neighbor, _ := matchSenderToNeighbor(body.SenderIps, node.Neighbors)
+				newEntry := DVEntry{
+					Destination: node.RoutingTable[neighbor].Destination,
+					NextHop:     node.RoutingTable[neighbor].NextHop,
+					Cost:        rtt / 2,
+				}
+				node.RoutingTable[neighbor] = newEntry
+				fmt.Println(rtt)
+			}
+		}(packet, sender, listener)
+
+		//go forwardPacket(packet, sender, *nextNode, listener)
 	}
 }
 
@@ -606,7 +661,7 @@ func sendHeartbeats(node *Node) {
 	}
 
 	for _, neighbor := range node.Neighbors {
-		conn, err := net.Dial("tcp4", neighbor+ONODE_UDP_PORT_STRING)
+		conn, err := net.Dial("tcp4", neighbor+ONODE_TCP_PORT_STRING)
 		if err != nil {
 			continue
 		}
@@ -624,7 +679,7 @@ func sendNeighboursHello(node *Node) {
 	}
 
 	for _, neighbor := range node.Neighbors {
-		conn, err := net.Dial("tcp4", neighbor+ONODE_UDP_PORT_STRING)
+		conn, err := net.Dial("tcp4", neighbor+ONODE_TCP_PORT_STRING)
 		if err != nil {
 			continue
 		}
@@ -658,6 +713,17 @@ func RunOverlayNode() {
 	fmt.Printf("Sending initial heartbeats to neighbors\n")
 	sendHeartbeats(nodePtr)
 	go controlMessageListener(nodePtr)
+	// 1. Resolve and Listen
+	localAddr, err := net.ResolveUDPAddr("udp4", ONODE_UDP_PORT_STRING)
+	if err != nil {
+		log.Fatal(err)
+	}
+	listener, err := net.ListenUDP("udp4", localAddr) // Note: Renamed to conn for clarity when sending/receiving
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer listener.Close()
+	go uDPListener(nodePtr, listener)
 
 	go func() {
 		ticker := time.NewTicker(10 * time.Second)
@@ -674,6 +740,14 @@ func RunOverlayNode() {
 		for range ticker.C {
 			fmt.Printf("Sending regular heartbeats to neighbors\n")
 			sendHeartbeats(nodePtr)
+		}
+	}()
+
+	go func() {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			sendLatencyProbe(nodePtr, listener)
 		}
 	}()
 
