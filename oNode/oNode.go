@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -80,6 +81,8 @@ type Node struct {
 	LiveNeighbors []string
 	LastHeartbeat map[string]time.Time
 	RoutingTable  map[string]DVEntry
+	// Added Mutex for safety
+	TableMtx sync.RWMutex
 }
 
 type StreamJoinBody struct {
@@ -95,19 +98,13 @@ type HeartbeatBody struct {
 	SenderIPs []string `json:"sender_ips"`
 }
 
-// filterIPv4SenderIPs checks a slice of IP strings and returns only the
-// valid, non-loopback IPv4 addresses.
 func filterIPv4SenderIPs(ips []string) []string {
 	var filtered []string
 	for _, ipStr := range ips {
 		ip := net.ParseIP(ipStr)
 		if ip == nil {
-			// Not a valid IP string, skip it
 			continue
 		}
-
-		// Check if it's a valid IPv4 address (To4() returns non-nil)
-		// and if it is not a loopback address (127.0.0.1 or ::1)
 		if ip.To4() != nil && !ip.IsLoopback() {
 			filtered = append(filtered, ipStr)
 		}
@@ -115,13 +112,8 @@ func filterIPv4SenderIPs(ips []string) []string {
 	return filtered
 }
 
-// printDVUpdate prints the contents of a DVUpdateBody in a readable format,
-// filtering the SenderIPs for non-loopback IPv4 addresses.
 func printDVUpdate(update DVUpdateBody) {
 	fmt.Println("--- DV Update Details ---")
-
-	// 1. Sender Information (with filtering)
-	// Filter the raw sender IPs to show only relevant IPv4 addresses
 	filteredSenders := filterIPv4SenderIPs(update.SenderIPs)
 
 	if len(filteredSenders) > 0 {
@@ -130,16 +122,12 @@ func printDVUpdate(update DVUpdateBody) {
 		fmt.Println("Sender IPs (Filtered): None provided or all were IPv6/Loopback")
 	}
 
-	// 2. Routing Entries
 	fmt.Printf("Routing Entries (%d total):\n", len(update.Entries))
 
 	if len(update.Entries) > 0 {
-		// Print a header for the table
 		fmt.Println("--------------------------------------------------")
 		fmt.Println("Destination\tNext Hop\tCost")
 		fmt.Println("--------------------------------------------------")
-
-		// Iterate and print each entry
 		for _, entry := range update.Entries {
 			fmt.Printf("%-15s\t%-15s\t%d\n", entry.Destination, entry.NextHop, entry.Cost)
 		}
@@ -147,11 +135,9 @@ func printDVUpdate(update DVUpdateBody) {
 	} else {
 		fmt.Println("No routing entries included in this update.")
 	}
-
 	fmt.Println("-------------------------")
 }
 
-// matchSenderToNeighbor finds which neighbor in the list matches any of the sender's IPs
 func matchSenderToNeighbor(senderIPs []string, neighbors []string) (neighbor string, match bool) {
 	for _, senderIP := range senderIPs {
 		for _, neighbor := range neighbors {
@@ -160,7 +146,7 @@ func matchSenderToNeighbor(senderIPs []string, neighbors []string) (neighbor str
 			}
 		}
 	}
-	return "", false // No match found
+	return "", false
 }
 
 func sendTCPMessage(conn net.Conn, msg TCPMessage) error {
@@ -168,7 +154,6 @@ func sendTCPMessage(conn net.Conn, msg TCPMessage) error {
 	if err != nil {
 		return err
 	}
-	// send plain text JSON with newline terminator
 	b = append(b, '\n')
 	_, err = conn.Write(b)
 	return err
@@ -324,6 +309,10 @@ func initiateTable(neighbors []string) Node {
 }
 
 func prepareDVUpdate(node *Node) DVUpdateBody {
+	// Add lock if you add mutex to Node struct
+	node.TableMtx.RLock()
+	defer node.TableMtx.RUnlock()
+
 	update := DVUpdateBody{
 		SenderIPs: node.Address,
 		Entries:   make([]DVEntry, 0, len(node.RoutingTable)),
@@ -365,7 +354,7 @@ func controlMessageListener(node *Node) {
 	if err != nil {
 		return
 	}
-	defer listener.Close()
+	// Do not defer close inside a goroutine unless handling shutdown signals
 
 	for {
 		conn, err := listener.AcceptTCP()
@@ -403,7 +392,7 @@ func controlMessageListener(node *Node) {
 					if _, matched := matchSenderToNeighbor(update.SenderIPs, node.Neighbors); matched {
 						propagateDV(node, sender)
 					} else {
-						propagateDV(node, "") // No match, send to all
+						propagateDV(node, "")
 					}
 				}
 
@@ -418,23 +407,18 @@ func controlMessageListener(node *Node) {
 					node.LastHeartbeat[neighbor] = time.Now()
 					fmt.Printf("Matched heartbeat from: %s -> %s \n", sender, neighbor)
 
+					node.TableMtx.Lock()
 					node.RoutingTable[neighbor] = DVEntry{
 						Destination: neighbor,
-						NextHop:     sender, // Use the IP that connected
+						NextHop:     sender,
 						Cost:        1,
 					}
+					node.TableMtx.Unlock()
 				}
 
 			default:
 			}
 		}(conn)
-
-		// debug
-		fmt.Println("Routing table for node:")
-		fmt.Println("Destination\tNextHop\tCost")
-		for dest, entry := range node.RoutingTable {
-			fmt.Printf("%s\t%s\t%d\n", dest, entry.NextHop, entry.Cost)
-		}
 	}
 }
 
@@ -442,37 +426,26 @@ func updateLiveNeighbors(node *Node) {
 	timeout := time.Second * 30
 	var newLive []string
 
-	//fmt.Printf("[DEBUG] === Checking Live Neighbors ===\n")
-	//fmt.Printf("[DEBUG] node.Neighbors: %v\n", node.Neighbors)
-	//fmt.Printf("[DEBUG] node.LastHeartbeat keys: ")
-	for k := range node.LastHeartbeat {
-		fmt.Printf("%q ", k)
-	}
-	fmt.Printf("\n")
-
 	for _, neighbor := range node.Neighbors {
-		//fmt.Printf("[DEBUG] Checking neighbor: %q\n", neighbor)
 		if lastSeen, exists := node.LastHeartbeat[neighbor]; exists {
 			age := time.Since(lastSeen)
 			if age <= timeout {
 				newLive = append(newLive, neighbor)
-				//fmt.Printf("[DEBUG] %s is ALIVE (last seen %v ago)\n", neighbor, age)
 			} else {
-				//fmt.Printf("[DEBUG] %s is DEAD (last seen %v ago)\n", neighbor, age)
 				removeRoutesThrough(node, neighbor)
 			}
 		} else {
-			//fmt.Printf("[DEBUG] %s has never been seen\n", neighbor)
 			removeRoutesThrough(node, neighbor)
 		}
 	}
 	node.LiveNeighbors = newLive
-	//fmt.Printf("[DEBUG] Final LiveNeighbors: %v\n", newLive)
 }
 
 func removeRoutesThrough(node *Node, deadNeighbor string) {
-	routesChanged := false
+	node.TableMtx.Lock()
+	defer node.TableMtx.Unlock()
 
+	routesChanged := false
 	for dest, entry := range node.RoutingTable {
 		if entry.Destination == deadNeighbor || entry.NextHop == deadNeighbor {
 			delete(node.RoutingTable, dest)
@@ -481,22 +454,20 @@ func removeRoutesThrough(node *Node, deadNeighbor string) {
 	}
 
 	if routesChanged {
-		propagateDV(node, "") // Notify all neighbors
+		go propagateDV(node, "")
 	}
 }
 
 func updateTable(node *Node, update DVUpdateBody, nodeFacingIp string) bool {
-	// Check if the sender is a known neighbor (already filtered by matchSenderToNeighbor)
 	neighbor, matched := matchSenderToNeighbor(update.SenderIPs, node.Neighbors)
-
 	changed := false
 
 	fmt.Printf("\n[DEBUG-UPDATE] Starting update from neighbor: %s (Match: %t)\n", neighbor, matched)
 
-	for _, updateEntry := range update.Entries {
-		fmt.Printf("[DEBUG-UPDATE] Processing destination: %s (Cost: %d)\n", updateEntry.Destination, updateEntry.Cost)
+	node.TableMtx.Lock()
+	defer node.TableMtx.Unlock()
 
-		// 1. Poison Reverse Check (Self-Check)
+	for _, updateEntry := range update.Entries {
 		isSelf := false
 		for _, local := range node.Address {
 			if updateEntry.Destination == local {
@@ -505,26 +476,23 @@ func updateTable(node *Node, update DVUpdateBody, nodeFacingIp string) bool {
 			}
 		}
 		if isSelf {
-			//fmt.Println("[DEBUG-UPDATE] Destination is LOCAL ADDRESS. Skipping (Poison Reverse).")
 			continue
 		}
-
-		// Handle case where sender is unknown
 		if !matched {
-			//fmt.Printf("[WARN] Got DVUpdate from UNKNOWN node: %s. Update skipped.\n", nodeFacingIp)
 			continue
 		}
 
-		// Look up the current route to the destination in *our* table
 		currentRoute, exists := node.RoutingTable[updateEntry.Destination]
-		// WARN: this was changed to try and sum the latencies correct not tested yet
-		newCost := updateEntry.Cost + node.RoutingTable[neighbor].Cost // Cost to destination through the neighbor
+
+		// Use the neighbor's cost if known, else assume 1
+		linkCost := int64(1)
+		if nRoute, ok := node.RoutingTable[neighbor]; ok {
+			linkCost = nRoute.Cost
+		}
+
+		newCost := updateEntry.Cost + linkCost
 
 		if !exists {
-			// Case A: New route discovered
-			//fmt.Printf("[DEBUG-UPDATE] Route to %s DOES NOT EXIST. Adding new route via %s (Cost: %d).\n",
-			//	updateEntry.Destination, nodeFacingIp, newCost)
-
 			node.RoutingTable[updateEntry.Destination] = DVEntry{
 				Destination: updateEntry.Destination,
 				NextHop:     nodeFacingIp,
@@ -532,16 +500,7 @@ func updateTable(node *Node, update DVUpdateBody, nodeFacingIp string) bool {
 			}
 			changed = true
 		} else {
-			// Case B: Route already exists. Check for shorter path.
-			fmt.Printf("[DEBUG-UPDATE] Route to %s EXISTS. Current Cost: %d. New Cost (via %s): %d.\n",
-				updateEntry.Destination, currentRoute.Cost, nodeFacingIp, newCost)
-
-			// Check for link failure (Poisoned route) or shorter path
 			if newCost < currentRoute.Cost {
-				// Case B.1: Found a shorter path!
-				fmt.Printf("[DEBUG-UPDATE] Path is SHORTER. Updating NextHop to %s and Cost to %d.\n",
-					nodeFacingIp, newCost)
-
 				node.RoutingTable[updateEntry.Destination] = DVEntry{
 					Destination: updateEntry.Destination,
 					NextHop:     nodeFacingIp,
@@ -549,29 +508,20 @@ func updateTable(node *Node, update DVUpdateBody, nodeFacingIp string) bool {
 				}
 				changed = true
 			} else if currentRoute.NextHop == neighbor && newCost > currentRoute.Cost {
-				// Case B.2: Path is longer, but we currently use this neighbor (Link Cost Change)
-				// This is required to detect when a link cost increases (or a route is poisoned)
-				//fmt.Printf("[DEBUG-UPDATE] Current NextHop IS %s, and path cost INCREASED. Updating cost to %d.\n",
-				//	neighbor, newCost)
-
 				node.RoutingTable[updateEntry.Destination] = DVEntry{
 					Destination: updateEntry.Destination,
 					NextHop:     nodeFacingIp,
 					Cost:        newCost,
 				}
 				changed = true
-			} else {
-				// Case B.3: Path is longer, and we use a different neighbor (Ignore)
-				//fmt.Printf("[DEBUG-UPDATE] Path is LONGER or equal, and we use a different NextHop (%s). Ignoring update.\n",
-				//	currentRoute.NextHop)
 			}
 		}
 	}
-	//fmt.Printf("[DEBUG-UPDATE] Update finished. Table changed: %t\n\n", changed)
 	return changed
 }
 
 func propagateDV(node *Node, except string) {
+	// Call internal prepare (which handles locks)
 	update := prepareDVUpdate(node)
 
 	body, err := json.Marshal(update)
@@ -601,15 +551,6 @@ func propagateDV(node *Node, except string) {
 }
 
 func uDPListener(node *Node, listener *net.UDPConn) {
-	//localAddr, err := net.ResolveUDPAddr("udp4", ONODE_UDP_PORT_STRING)
-	//if err != nil {
-	//	log.Fatal(err)
-	//}
-	//
-	//listener, err := net.ListenUDP("udp4", localAddr)
-	//if err != nil {
-	//	log.Fatal(err)
-	//}
 	defer listener.Close()
 
 	for {
@@ -638,28 +579,26 @@ func uDPListener(node *Node, listener *net.UDPConn) {
 
 				rtt := time.Now().Unix() - body.TimeStamp
 				neighbor, _ := matchSenderToNeighbor(body.SenderIps, node.Neighbors)
-				newEntry := DVEntry{
-					Destination: node.RoutingTable[neighbor].Destination,
-					NextHop:     node.RoutingTable[neighbor].NextHop,
-					Cost:        rtt / 2,
+
+				node.TableMtx.Lock()
+				if entry, ok := node.RoutingTable[neighbor]; ok {
+					newEntry := entry
+					newEntry.Cost = rtt / 2
+					node.RoutingTable[neighbor] = newEntry
 				}
-				node.RoutingTable[neighbor] = newEntry
-				fmt.Println(rtt)
+				node.TableMtx.Unlock()
+				fmt.Println("RTT:", rtt)
 			}
 		}(packet, sender, listener)
-
-		//go forwardPacket(packet, sender, *nextNode, listener)
 	}
 }
 
 func sendHeartbeats(node *Node) {
 	body, _ := json.Marshal(HeartbeatBody{SenderIPs: node.Address})
-
 	msg := TCPMessage{
 		MsgType: MsgHeartbeat,
 		Body:    body,
 	}
-
 	for _, neighbor := range node.Neighbors {
 		conn, err := net.Dial("tcp4", neighbor+ONODE_TCP_PORT_STRING)
 		if err != nil {
@@ -672,12 +611,7 @@ func sendHeartbeats(node *Node) {
 
 func sendNeighboursHello(node *Node) {
 	body, _ := json.Marshal(NeighborsHelloBody{node.Address})
-
-	msg := TCPMessage{
-		MsgType: MsgNeighborsHello,
-		Body:    body,
-	}
-
+	msg := TCPMessage{MsgType: MsgNeighborsHello, Body: body}
 	for _, neighbor := range node.Neighbors {
 		conn, err := net.Dial("tcp4", neighbor+ONODE_TCP_PORT_STRING)
 		if err != nil {
@@ -693,17 +627,28 @@ func forwardPacket(packet []byte, srcAddr *net.UDPAddr, nextNode string, localCo
 	if err != nil {
 		return
 	}
-
-	_, err = localConn.WriteToUDP(packet, nextAddr)
-	if err != nil {
-		return
-	}
+	localConn.WriteToUDP(packet, nextAddr)
 }
 
-func RunOverlayNode() {
+// === NEW HELPER METHOD FOR YOUR STREAMING CODE ===
+func (n *Node) GetNextHop(destination string) (string, error) {
+	n.TableMtx.RLock()
+	defer n.TableMtx.RUnlock()
+	entry, exists := n.RoutingTable[destination]
+	if !exists {
+		return "", fmt.Errorf("no route")
+	}
+	return entry.NextHop, nil
+}
+
+// === REFACTORED START FUNCTION ===
+func StartOverlayNode() *Node {
 	neighbors, err := getNeighbors()
 	if err != nil {
-		return
+		fmt.Println("Error getting neighbors:", err)
+		// Return empty safe node
+		n := initiateTable([]string{})
+		return &n
 	}
 	fmt.Println("Node Neighbors at start:", neighbors)
 
@@ -712,24 +657,25 @@ func RunOverlayNode() {
 
 	fmt.Printf("Sending initial heartbeats to neighbors\n")
 	sendHeartbeats(nodePtr)
+
+	// Start Listeners in Background
 	go controlMessageListener(nodePtr)
-	// 1. Resolve and Listen
+
 	localAddr, err := net.ResolveUDPAddr("udp4", ONODE_UDP_PORT_STRING)
 	if err != nil {
 		log.Fatal(err)
 	}
-	listener, err := net.ListenUDP("udp4", localAddr) // Note: Renamed to conn for clarity when sending/receiving
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer listener.Close()
-	go uDPListener(nodePtr, listener)
 
+	listener, err := net.ListenUDP("udp4", localAddr)
+	if err == nil {
+		go uDPListener(nodePtr, listener)
+	}
+
+	// Start Tickers in Background
 	go func() {
 		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
-			fmt.Printf("Checking neighbor life\n")
 			updateLiveNeighbors(nodePtr)
 		}
 	}()
@@ -738,7 +684,6 @@ func RunOverlayNode() {
 		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
-			fmt.Printf("Sending regular heartbeats to neighbors\n")
 			sendHeartbeats(nodePtr)
 		}
 	}()
@@ -751,17 +696,14 @@ func RunOverlayNode() {
 		}
 	}()
 
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			periodicDVBroadcast(nodePtr)
+		}
+	}()
 
-	for range ticker.C {
-		fmt.Printf("Forcing Dv updates\n")
-		periodicDVBroadcast(nodePtr)
-	}
-	// debug
-	//fmt.Println("Routing table for node:", node.Address)
-	//fmt.Println("Destination\tNextHop\tCost")
-	//for dest, entry := range node.RoutingTable {
-	//	fmt.Printf("%s\t%s\t%d\n", dest, entry.NextHop, entry.Cost)
-	//}
+	// Return the node so Streaming can use it
+	return nodePtr
 }

@@ -1,39 +1,32 @@
-/*
-Copyright © 2025 NAME HERE <EMAIL ADDRESS>
-*/
 package cmd
 
 import (
+	"fmt"
 	"ott/oNode"
+	"ott/streaming"
 
 	"github.com/spf13/cobra"
 )
 
-// oNodeCmd represents the oNode command
+var targetServer string
+
 var oNodeCmd = &cobra.Command{
 	Use:   "oNode",
-	Short: "A brief description of your command",
-	Long: `A longer description that spans multiple lines and likely contains examples
-and usage of using your command. For example:
-
-Cobra is a CLI library for Go that empowers applications.
-This application is a tool to generate the needed files
-to quickly create a Cobra application.`,
+	Short: "Start Overlay Node + Streaming Service",
 	Run: func(cmd *cobra.Command, args []string) {
-		oNode.RunOverlayNode()
+
+		fmt.Println("--- Starting Overlay Routing ---")
+		overlayInstance := oNode.StartOverlayNode()
+
+		fmt.Println("--- Starting Streaming Service ---")
+		streamer := streaming.NewStreamingManager(overlayInstance, targetServer)
+		streamer.Start()
+
+		select {}
 	},
 }
 
 func init() {
 	rootCmd.AddCommand(oNodeCmd)
-
-	// Here you will define your flags and configuration settings.
-
-	// Cobra supports Persistent Flags which will work for this command
-	// and all subcommands, e.g.:
-	// oNodeCmd.PersistentFlags().String("foo", "", "A help for foo")
-
-	// Cobra supports local flags which will only run when this command
-	// is called directly, e.g.:
-	// oNodeCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
+	oNodeCmd.Flags().StringVar(&targetServer, "server", "", "Target Server IP for streaming")
 }
