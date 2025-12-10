@@ -13,6 +13,7 @@ import (
 var BOOTSTRAPER_IP = "10.0.2.10:8000"
 var ONODE_TCP_PORT_STRING = ":9000"
 var ONODE_UDP_PORT_STRING = ":9999"
+var INF_COST int64 = 9999999
 
 type TCPMessageType uint8
 
@@ -194,7 +195,7 @@ func sendLatencyProbe(node *Node, local *net.UDPConn) error {
 		}
 
 		neighborIP := net.ParseIP(neighbor)
-		port, _ := strconv.Atoi(ONODE_UDP_PORT_STRING)
+		port, _ := strconv.Atoi(ONODE_UDP_PORT_STRING[1:])
 		sendUDPMessage(local, &net.UDPAddr{IP: neighborIP, Port: port}, msg)
 	}
 	return nil
@@ -473,15 +474,30 @@ func updateLiveNeighbors(node *Node) {
 func removeRoutesThrough(node *Node, deadNeighbor string) {
 	routesChanged := false
 
+	// Route to the dead neighbor itself
+	if _, exists := node.RoutingTable[deadNeighbor]; exists {
+		node.RoutingTable[deadNeighbor] = DVEntry{
+			Destination: deadNeighbor,
+			NextHop:     deadNeighbor, // Stays the same or set to nil
+			Cost:        INF_COST,     // POISON THE ROUTE TO THE DEAD NODE
+		}
+		routesChanged = true
+	}
+
+	// Routes that use the dead neighbor as the NextHop
 	for dest, entry := range node.RoutingTable {
-		if entry.Destination == deadNeighbor || entry.NextHop == deadNeighbor {
-			delete(node.RoutingTable, dest)
+		if entry.NextHop == deadNeighbor && entry.Cost < INF_COST { // Only poison if it's currently reachable
+			node.RoutingTable[dest] = DVEntry{
+				Destination: dest,
+				NextHop:     deadNeighbor,
+				Cost:        INF_COST, // POISON THE ROUTE
+			}
 			routesChanged = true
 		}
 	}
 
 	if routesChanged {
-		propagateDV(node, "") // Notify all neighbors
+		propagateDV(node, "") // Propagate the poisoned routes immediately
 	}
 }
 
@@ -628,23 +644,27 @@ func uDPListener(node *Node, listener *net.UDPConn) {
 			}
 			switch message.MsgType {
 			case MsgLatencyProbe:
-				sendUDPMessage(listener, sender, message)
+				replyMsg := UDPMessage{
+					MsgType: MsgLatencyProbeReply,
+					Body:    message.Body,
+				}
+				sendUDPMessage(listener, sender, replyMsg)
 			case MsgLatencyProbeReply:
-				var body LatencyProbeBody
-				err = json.Unmarshal(message.Body, &body)
-				if err != nil {
-					return
-				}
-
-				rtt := time.Now().Unix() - body.TimeStamp
-				neighbor, _ := matchSenderToNeighbor(body.SenderIps, node.Neighbors)
-				newEntry := DVEntry{
-					Destination: node.RoutingTable[neighbor].Destination,
-					NextHop:     node.RoutingTable[neighbor].NextHop,
-					Cost:        rtt / 2,
-				}
-				node.RoutingTable[neighbor] = newEntry
-				fmt.Println(rtt)
+				// var body LatencyProbeBody
+				// err = json.Unmarshal(message.Body, &body)
+				// if err != nil {
+				// 	return
+				// }
+				//
+				// rtt := time.Now().Unix() - body.TimeStamp
+				// neighbor, _ := matchSenderToNeighbor(body.SenderIps, node.Neighbors)
+				// newEntry := DVEntry{
+				// 	Destination: node.RoutingTable[neighbor].Destination,
+				// 	NextHop:     node.RoutingTable[neighbor].NextHop,
+				// 	Cost:        rtt / 2,
+				// }
+				// node.RoutingTable[neighbor] = newEntry
+				// fmt.Println(rtt)
 			}
 		}(packet, sender, listener)
 
