@@ -6,7 +6,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// oNodeCmd represents the oNode command
+var targetServer string
+
 var oNodeCmd = &cobra.Command{
 	Use:   "oNode",
 	Short: "Start Overlay Node (Router + Streaming Relay)",

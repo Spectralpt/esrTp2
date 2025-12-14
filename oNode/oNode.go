@@ -8,6 +8,7 @@ import (
 	"net"
 	"ott/streaming"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -86,6 +87,8 @@ type Node struct {
 	LiveNeighbors []string
 	LastHeartbeat map[string]time.Time
 	RoutingTable  map[string]DVEntry
+	// Added Mutex for safety
+	TableMtx sync.RWMutex
 }
 
 type HeartbeatBody struct {
@@ -268,6 +271,10 @@ func initiateTable(neighbors []string) Node {
 }
 
 func prepareDVUpdate(node *Node) DVUpdateBody {
+	// Add lock if you add mutex to Node struct
+	node.TableMtx.RLock()
+	defer node.TableMtx.RUnlock()
+
 	update := DVUpdateBody{
 		SenderIPs: node.Address,
 		Entries:   make([]DVEntry, 0, len(node.RoutingTable)),
@@ -302,7 +309,7 @@ func controlMessageListener(node *Node) {
 	if err != nil {
 		return
 	}
-	defer listener.Close()
+	// Do not defer close inside a goroutine unless handling shutdown signals
 
 	for {
 		conn, err := listener.AcceptTCP()
@@ -350,6 +357,7 @@ func controlMessageListener(node *Node) {
 						NextHop:     sender,
 						Cost:        1,
 					}
+					node.TableMtx.Unlock()
 				}
 			}
 		}(conn)
@@ -446,6 +454,7 @@ func updateTable(node *Node, update DVUpdateBody, nodeFacingIp string) bool {
 }
 
 func propagateDV(node *Node, except string) {
+	// Call internal prepare (which handles locks)
 	update := prepareDVUpdate(node)
 	body, err := json.Marshal(update)
 	if err != nil {
@@ -536,8 +545,6 @@ func RunOverlayNode() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer listener.Close()
-	go uDPListener(nodePtr, listener)
 
 	// --- START STREAMING SERVICE ---
 	// Verifica se temos um IP válido (que não seja loopback, graças ao filtro)
@@ -576,8 +583,13 @@ func RunOverlayNode() {
 		}
 	}()
 
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			periodicDVBroadcast(nodePtr)
+		}
+	}()
 
 	for range ticker.C {
 		fmt.Printf("Forcing Dv updates\n")
