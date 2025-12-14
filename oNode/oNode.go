@@ -12,7 +12,6 @@ import (
 	"time"
 )
 
-// IP do Nó que tem o graph.json (Geralmente o Server A)
 var BOOTSTRAPER_IP = "10.0.0.10:8000"
 
 var ONODE_TCP_PORT_STRING = ":9000"
@@ -212,7 +211,6 @@ func reachableNeighbors(neighbors []string) []string {
 	return reachable
 }
 
-// CORREÇÃO CRÍTICA: Filtra Loopback e IPv6 para evitar "127.0.0.1"
 func getLocalIPs() ([]string, error) {
 	var ips []string
 	ifaces, err := net.Interfaces()
@@ -454,7 +452,6 @@ func updateTable(node *Node, update DVUpdateBody, nodeFacingIp string) bool {
 }
 
 func propagateDV(node *Node, except string) {
-	// Call internal prepare (which handles locks)
 	update := prepareDVUpdate(node)
 	body, err := json.Marshal(update)
 	if err != nil {
@@ -508,7 +505,6 @@ func sendHeartbeats(node *Node) {
 	}
 }
 
-// --- OverlayProvider Interface Implementation ---
 func (n *Node) GetNextHop(destination string) (string, error) {
 	entry, exists := n.RoutingTable[destination]
 	if !exists {
@@ -520,7 +516,6 @@ func (n *Node) GetNextHop(destination string) (string, error) {
 	return entry.NextHop, nil
 }
 
-// --- MAIN RUN FUNCTION ---
 func RunOverlayNode() {
 	neighbors, err := getNeighbors()
 	if err != nil {
@@ -546,15 +541,12 @@ func RunOverlayNode() {
 		log.Fatal(err)
 	}
 
-	// --- START STREAMING SERVICE ---
-	// Verifica se temos um IP válido (que não seja loopback, graças ao filtro)
 	if len(node.Address) > 0 {
 		bindIP := node.Address[0]
 		// Passa o nó e o IP de bind. O Manager descobre rotas dinamicamente.
 		sm := streaming.NewStreamingManager(nodePtr, bindIP)
 		go sm.Start()
 	} else {
-		fmt.Println("❌ AVISO: Não foi possível detetar IP de rede válido. Streaming Manager não iniciado.")
 	}
 	// -------------------------------
 
