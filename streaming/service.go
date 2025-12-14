@@ -22,14 +22,12 @@ type StreamState struct {
 	StreamID string
 	ParentIP string
 
-	// MUDANÇA 1: O mapa agora guarda QUANDO foi o último pedido
 	DownstreamNodes map[string]time.Time
 
-	// MUDANÇA 2: Mapa auxiliar para guardar o endereço físico de envio
 	DownstreamAddrs map[string]*net.UDPAddr
 
 	HasLocalClients bool
-	LastClientSeen  time.Time // Quando vi o último JOIN local
+	LastClientSeen  time.Time 
 	IsActive        bool
 }
 
@@ -65,7 +63,6 @@ func (sm *StreamingManager) Start() {
 	mAddr, _ := net.ResolveUDPAddr("udp4", STREAMING_MULTICAST_ADDR)
 	sm.multicastAddr = mAddr
 
-	fmt.Printf("📺 Streaming Manager active on %s\n", sm.bindIP)
 
 	go sm.handlePackets()
 }
@@ -99,7 +96,6 @@ func (sm *StreamingManager) requestStream(streamID string) {
 func (sm *StreamingManager) handlePackets() {
 	buf := make([]byte, 65535)
 
-	// --- MUDANÇA 3: GARBAGE COLLECTOR (O LIMPADOR) ---
 	go func() {
 		for {
 			time.Sleep(3 * time.Second) // Verificar a cada 3 segundos
@@ -110,19 +106,15 @@ func (sm *StreamingManager) handlePackets() {
 				// A. Limpar Vizinhos Expirados
 				for ip, lastSeen := range state.DownstreamNodes {
 					if now.Sub(lastSeen) > STREAM_TIMEOUT {
-						fmt.Printf("✂️ Vizinho %s expirou na stream %s (Timeout)\n", ip, id)
 						delete(state.DownstreamNodes, ip)
 						delete(state.DownstreamAddrs, ip)
 					}
 				}
 
-				// B. Limpar Clientes Locais Expirados
 				if state.HasLocalClients && now.Sub(state.LastClientSeen) > STREAM_TIMEOUT {
-					fmt.Printf("✂️ Clientes locais expiraram na stream %s (Timeout)\n", id)
 					state.HasLocalClients = false
 				}
 
-				// C. Se não sobrou ninguém, paramos de pedir stream
 				hasConsumers := len(state.DownstreamNodes) > 0 || state.HasLocalClients
 
 				if hasConsumers {
