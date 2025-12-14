@@ -1,48 +1,57 @@
 package server
 
 import (
+	"fmt"
+	"io"
 	"net"
+	"os"
+	"os/exec"
+	"ott/streaming"
+	"time"
 
 	"github.com/fatih/color"
 )
 
-func response(conn *net.UDPConn, addr *net.UDPAddr) {
-	_, err := conn.WriteToUDP([]byte("Server:You are connected"), addr)
-	if err != nil {
-		color.Red("Its cooked: %v", err)
-	}
-}
+// MUDANÇA: Agora recebe 'filename' como argumento
+func Server(myIP string, filename string) {
+	color.Green("--- OTT Video Server Source (%s) ---", myIP)
 
-func Server() {
-	addr := net.UDPAddr{
-		Port: 8080,
-		IP:   net.ParseIP("127.0.0.1"),
+	// Verifica se o ficheiro pedido existe
+	if _, err := os.Stat(filename); os.IsNotExist(err) {
+		color.Red("❌ Error: File '%s' not found!", filename)
+		return
 	}
-	conn, err := net.ListenUDP("udp", &addr)
+
+	destAddr, _ := net.ResolveUDPAddr("udp", fmt.Sprintf("127.0.0.1:%d", 9001))
+	conn, err := net.DialUDP("udp", nil, destAddr)
 	if err != nil {
-		color.Red("%s", err)
+		return
 	}
 	defer conn.Close()
 
-	color.Green("Server is listening on %s:%d", addr.IP.String(), addr.Port)
+	// Usa o filename passado no comando
+	cmd := exec.Command("ffmpeg", "-re", "-i", filename, "-c:v", "copy", "-f", "mpegts", "-")
+	ffmpegOut, _ := cmd.StdoutPipe()
+	cmd.Start()
+	defer cmd.Wait()
 
-	buffer := make([]byte, 1024)
+	color.Green("▶️  Streaming %s (ID: %s)...", filename, myIP)
+
+	buf := make([]byte, 1316)
 
 	for {
-		n, addr, err := conn.ReadFromUDP(buffer)
+		n, err := io.ReadFull(ffmpegOut, buf)
 		if err != nil {
-			color.Red("%s", err)
-			continue
+			break
 		}
 
-		color.Cyan(string(buffer[:n]))
-		/*
-			fmt.Printf("Got %d bytes from %s: %s\n", n, addr, string(buffer[:n]))
-			color.Green("Whatever n is:%s", n)
-			color.Green("addr:", addr.String())
-		*/
+		if n > 0 {
+			rtpPacket := streaming.EncodeRTPPacket(buf[:n], false, uint32(time.Now().UnixMilli()))
 
-		go response(conn, addr)
+			// O StreamID continua a ser o IP deste servidor
+			finalPacket := streaming.EncapsulateStreamPacket(myIP, rtpPacket)
 
+			conn.Write(finalPacket)
+		}
 	}
 }

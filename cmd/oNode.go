@@ -1,6 +1,3 @@
-/*
-Copyright © 2025 NAME HERE <EMAIL ADDRESS>
-*/
 package cmd
 
 import (
@@ -12,28 +9,19 @@ import (
 // oNodeCmd represents the oNode command
 var oNodeCmd = &cobra.Command{
 	Use:   "oNode",
-	Short: "A brief description of your command",
-	Long: `A longer description that spans multiple lines and likely contains examples
-and usage of using your command. For example:
-
-Cobra is a CLI library for Go that empowers applications.
-This application is a tool to generate the needed files
-to quickly create a Cobra application.`,
+	Short: "Start Overlay Node (Router + Streaming Relay)",
+	Long: `Starts the overlay node logic. 
+It connects to the Bootstrapper, builds the routing table using Distance Vector, 
+and automatically starts the Streaming Manager to relay video packets.`,
 	Run: func(cmd *cobra.Command, args []string) {
+		// Apenas chamamos a função principal.
+		// Ela trata de tudo: Routing, Heartbeats e Streaming Manager.
 		oNode.RunOverlayNode()
 	},
 }
 
 func init() {
 	rootCmd.AddCommand(oNodeCmd)
-
-	// Here you will define your flags and configuration settings.
-
-	// Cobra supports Persistent Flags which will work for this command
-	// and all subcommands, e.g.:
-	// oNodeCmd.PersistentFlags().String("foo", "", "A help for foo")
-
-	// Cobra supports local flags which will only run when this command
-	// is called directly, e.g.:
-	// oNodeCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
+	// Não precisamos de flags extras aqui porque a configuração
+	// (como o IP do Bootstrapper) está definida no pacote oNode.
 }

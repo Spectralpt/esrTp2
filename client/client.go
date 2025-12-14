@@ -1,91 +1,69 @@
 package client
 
 import (
-	"bufio"
 	"fmt"
 	"net"
-	"strings"
+	"os"
+	"os/exec"
+	"ott/streaming"
 	"time"
 
 	"github.com/fatih/color"
 )
 
-// neighbors string doesnt inlcude the port, probably should standardize that in a config file
-func pingNeighborsUDP(neighbors []string) {
-	for _, neighbor := range neighbors {
-		conn, err := net.Dial("udp4", neighbor)
-		if err != nil {
-			color.Red("Failed to connect to: %v", conn.RemoteAddr())
-		}
-	}
-}
+const MULTICAST_ADDR = "239.0.0.1:9998"
+const LOCAL_OVERLAY_PORT = 9001
 
-func getNeighbors(bootstrapperIp []net.IP) (neighbors []string) {
-	ConnTimeout := time.Second * 10
-	buff := make([]byte, 2048)
+func Client(gatewayIP string, wantedStreamID string) {
+	color.Green("--- OTT Client ---")
+	color.Cyan("Gateway: %s | Watching Stream: %s", gatewayIP, wantedStreamID)
 
-	serverAddrStr := "10.0.3.10:8080"
+	// Inicia FFplay (Modo Safe)
+	cmd := exec.Command("ffplay", "-i", "pipe:0", "-hide_banner", "-autoexit", "-x", "640", "-y", "480")
+	cmd.Stderr = os.Stderr
+	ffplayIn, _ := cmd.StdinPipe()
+	cmd.Start()
+	defer cmd.Wait()
 
-	color.Green("Client started")
-
-	// Try to establish connection for 10 seconds
-	var conn net.Conn
-	start := time.Now()
-	for time.Since(start) < ConnTimeout {
-		gray := color.New(color.FgHiBlack)
-		gray.Println("Attemping to connect to:", serverAddrStr)
-		var err error
-		conn, err = net.Dial("tcp", serverAddrStr) // Changed from "udp" to "tcp"
-		if err == nil {
-			break
-		}
-		time.Sleep(time.Second)
-	}
-
-	if conn == nil {
-		red := color.New(color.FgRed)
-		gray := color.New(color.FgHiBlack)
-
-		red.Print("Connection timed out: ")
-		gray.Println("(10 seconds)")
-
-		return
-	}
-
+	nodeAddr, _ := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", gatewayIP, LOCAL_OVERLAY_PORT))
+	conn, _ := net.DialUDP("udp", nil, nodeAddr)
 	defer conn.Close()
+
+	// Envia JOIN periódico para manter a stream viva
+	go func() {
+		for {
+			msg := fmt.Sprintf("JOIN|%s", wantedStreamID)
+			conn.Write([]byte(msg))
+			time.Sleep(5 * time.Second)
+		}
+	}()
+
+	mAddr, _ := net.ResolveUDPAddr("udp4", MULTICAST_ADDR)
+	l, _ := net.ListenMulticastUDP("udp4", nil, mAddr)
+	defer l.Close()
+	l.SetReadBuffer(1024 * 1024)
+
+	buf := make([]byte, 65535)
+
 	for {
-		n, err := bufio.NewReader(conn).Read(buff)
+		n, _, err := l.ReadFromUDP(buf)
 		if err != nil {
-			color.Red("Read error: %v", err)
-			return
+			continue
 		}
-		neighbors := string(buff[:n])
-		color.Green(neighbors)
-		if len(neighbors) > 0 {
-			return strings.Split(neighbors, ",")
-		}
-	}
-}
 
-func readStream() {
-	conn, err := net.DialTimeout("udp4", ":8080", time.Second*10)
-	buff := make([]byte, 2048)
-	if err != nil {
-		color.New(color.FgRed).Println(err)
-	}
-	fmt.Println(conn.LocalAddr().String())
-	for {
-		n, err := bufio.NewReader(conn).Read(buff)
+		// 1. Desencapsula
+		recvdID, rtpData, err := streaming.DecapsulateStreamPacket(buf[:n])
 		if err != nil {
-			color.Red("Error reading udp stream: %v", err)
+			continue
 		}
-		color.HiBlack(string(buff[:n]))
+
+		// 2. Filtra
+		if recvdID != wantedStreamID {
+			continue
+		}
+
+		// 3. Reproduz
+		_, payload, _ := streaming.DecodeRTPPacket(rtpData)
+		ffplayIn.Write(payload)
 	}
-}
-
-func Client() {
-	// neighbors := getNeighbors()
-	// fmt.Println(neighbors)
-
-	readStream()
 }
