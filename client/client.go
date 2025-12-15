@@ -18,7 +18,6 @@ func Client(gatewayIP string, wantedStreamID string) {
 	color.Green("--- OTT Client ---")
 	color.Cyan("Gateway: %s | Watching Stream: %s", gatewayIP, wantedStreamID)
 
-	// Inicia FFplay (Modo Safe)
 	cmd := exec.Command("ffplay", "-i", "pipe:0", "-hide_banner", "-autoexit", "-x", "640", "-y", "480")
 	cmd.Stderr = os.Stderr
 	ffplayIn, _ := cmd.StdinPipe()
@@ -29,7 +28,6 @@ func Client(gatewayIP string, wantedStreamID string) {
 	conn, _ := net.DialUDP("udp", nil, nodeAddr)
 	defer conn.Close()
 
-	// Envia JOIN periódico para manter a stream viva
 	go func() {
 		for {
 			msg := fmt.Sprintf("JOIN|%s", wantedStreamID)
@@ -51,18 +49,15 @@ func Client(gatewayIP string, wantedStreamID string) {
 			continue
 		}
 
-		// 1. Desencapsula
 		recvdID, rtpData, err := streaming.DecapsulateStreamPacket(buf[:n])
 		if err != nil {
 			continue
 		}
 
-		// 2. Filtra
 		if recvdID != wantedStreamID {
 			continue
 		}
 
-		// 3. Reproduz
 		_, payload, _ := streaming.DecodeRTPPacket(rtpData)
 		ffplayIn.Write(payload)
 	}
