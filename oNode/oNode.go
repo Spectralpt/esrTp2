@@ -143,6 +143,19 @@ func sendLatencyProbe(node *Node, local *net.UDPConn) error {
 	return nil
 }
 
+func printRoutingTable(node *Node) {
+	node.TableMtx.RLock()
+	defer node.TableMtx.RUnlock()
+
+	fmt.Println("\n--- TABELA DE ROTAS ATUAL ---")
+	fmt.Printf("%-15s %-15s %-10s\n", "Destino", "NextHop", "Custo(ms)")
+	fmt.Println("-------------------------------------------")
+	for dest, entry := range node.RoutingTable {
+		fmt.Printf("%-15s %-15s %d\n", dest, entry.NextHop, entry.Cost)
+	}
+	fmt.Println("-------------------------------------------\n")
+}
+
 func getNeighbors() ([]string, error) {
 	conn, err := net.Dial("tcp4", BOOTSTRAPER_IP)
 	if err != nil {
@@ -655,6 +668,13 @@ func RunOverlayNode() {
 		ticker := time.NewTicker(10 * time.Second)
 		for range ticker.C {
 			periodicDVBroadcast(nodePtr)
+		}
+	}()
+
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		for range ticker.C {
+			printRoutingTable(nodePtr)
 		}
 	}()
 
