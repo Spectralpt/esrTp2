@@ -77,12 +77,10 @@ type Node struct {
 	LiveNeighbors []string
 	LastHeartbeat map[string]time.Time
 
-	// Mapa para guardar o custo direto (latência) para cada vizinho
 	LinkCosts map[string]int64
 
 	RoutingTable map[string]DVEntry
 
-	// Mutex ESSENCIAL para evitar crashes de concorrência
 	TableMtx sync.RWMutex
 }
 
@@ -123,7 +121,6 @@ func sendUDPMessage(local *net.UDPConn, remote *net.UDPAddr, msg UDPMessage) err
 	return err
 }
 
-// Envia probes para medir latência (QoS)
 func sendLatencyProbe(node *Node, local *net.UDPConn) error {
 	node.TableMtx.RLock()
 	defer node.TableMtx.RUnlock()
@@ -294,25 +291,18 @@ func periodicDVBroadcast(node *Node) {
 	// Para CADA vizinho, criamos uma mensagem personalizada (Split Horizon / Poison Reverse)
 	for _, neighborIP := range node.LiveNeighbors {
 
-		// 1. Preparar o corpo da mensagem para ESTE vizinho
 		updateBody := DVUpdateBody{
 			SenderIPs: node.Address,
 			Entries:   make([]DVEntry, 0, len(node.RoutingTable)),
 		}
 
-		// 2. Iterar sobre a tabela de rotas e aplicar Poison Reverse
 		for dest, entry := range node.RoutingTable {
 			costToSend := entry.Cost
 
-			// --- POISON REVERSE ---
-			// Se eu uso este vizinho (neighborIP) para chegar ao destino (dest),
-			// digo-lhe que o meu custo é INFINITO.
-			// Assim ele nunca me vai enviar pacotes para esse destino (evita loops).
 			if entry.NextHop == neighborIP {
 				costToSend = INF_COST
 			}
 
-			// Adiciona a entrada à atualização
 			updateBody.Entries = append(updateBody.Entries, DVEntry{
 				Destination: dest,
 				NextHop:     node.Address[0], // Quem envia sou eu
@@ -320,7 +310,6 @@ func periodicDVBroadcast(node *Node) {
 			})
 		}
 
-		// 3. Enviar a mensagem (Lógica in-line para não precisares de função extra)
 		go func(target string, body DVUpdateBody) {
 			conn, err := net.DialTimeout("tcp4", target+ONODE_TCP_PORT_STRING, 1*time.Second)
 			if err != nil {
@@ -430,10 +419,7 @@ func updateLiveNeighbors(node *Node) {
 	node.LiveNeighbors = newLive
 }
 
-// / removeRoutesThroughUnsafe deve ser chamada apenas quando já se tem o Lock
 func removeRoutesThroughUnsafe(node *Node, deadNeighbor string) {
-	// Rota direta para ele morre
-	// CORREÇÃO: Usamos '_' em vez de 'entry' porque só queremos saber 'exists'
 	if _, exists := node.RoutingTable[deadNeighbor]; exists {
 		node.RoutingTable[deadNeighbor] = DVEntry{
 			Destination: deadNeighbor,
@@ -441,7 +427,6 @@ func removeRoutesThroughUnsafe(node *Node, deadNeighbor string) {
 			Cost:        INF_COST,
 		}
 	}
-	// Rotas que passam por ele morrem
 	for dest, entry := range node.RoutingTable {
 		if entry.NextHop == deadNeighbor && entry.Cost < INF_COST {
 			node.RoutingTable[dest] = DVEntry{
