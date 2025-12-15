@@ -288,23 +288,53 @@ func prepareDVUpdate(node *Node) DVUpdateBody {
 }
 
 func periodicDVBroadcast(node *Node) {
-	// Fazemos cópia dos vizinhos para libertar o lock rapidamente
 	node.TableMtx.RLock()
-	targets := make([]string, len(node.LiveNeighbors))
-	copy(targets, node.LiveNeighbors)
-	node.TableMtx.RUnlock()
+	defer node.TableMtx.RUnlock()
 
-	update := prepareDVUpdate(node)
-	body, _ := json.Marshal(update)
-	msg := TCPMessage{MsgType: MsgDVUpdate, Body: body}
+	// Para CADA vizinho, criamos uma mensagem personalizada (Split Horizon / Poison Reverse)
+	for _, neighborIP := range node.LiveNeighbors {
 
-	for _, neighbor := range targets {
-		conn, err := net.DialTimeout("tcp4", neighbor+ONODE_TCP_PORT_STRING, 500*time.Millisecond)
-		if err != nil {
-			continue
+		// 1. Preparar o corpo da mensagem para ESTE vizinho
+		updateBody := DVUpdateBody{
+			SenderIPs: node.Address,
+			Entries:   make([]DVEntry, 0, len(node.RoutingTable)),
 		}
-		sendTCPMessage(conn, msg)
-		conn.Close()
+
+		// 2. Iterar sobre a tabela de rotas e aplicar Poison Reverse
+		for dest, entry := range node.RoutingTable {
+			costToSend := entry.Cost
+
+			// --- POISON REVERSE ---
+			// Se eu uso este vizinho (neighborIP) para chegar ao destino (dest),
+			// digo-lhe que o meu custo é INFINITO.
+			// Assim ele nunca me vai enviar pacotes para esse destino (evita loops).
+			if entry.NextHop == neighborIP {
+				costToSend = INF_COST
+			}
+
+			// Adiciona a entrada à atualização
+			updateBody.Entries = append(updateBody.Entries, DVEntry{
+				Destination: dest,
+				NextHop:     node.Address[0], // Quem envia sou eu
+				Cost:        costToSend,
+			})
+		}
+
+		// 3. Enviar a mensagem (Lógica in-line para não precisares de função extra)
+		go func(target string, body DVUpdateBody) {
+			conn, err := net.DialTimeout("tcp4", target+ONODE_TCP_PORT_STRING, 1*time.Second)
+			if err != nil {
+				return
+			}
+			defer conn.Close()
+
+			bodyBytes, _ := json.Marshal(body)
+			msg := TCPMessage{
+				MsgType: MsgDVUpdate,
+				Body:    bodyBytes,
+			}
+			sendTCPMessage(conn, msg)
+		}(neighborIP, updateBody)
 	}
 }
 
